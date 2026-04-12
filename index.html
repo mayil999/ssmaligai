@@ -387,7 +387,9 @@ window.addEventListener('firebase-failed',()=>{
 // ── Calculations ──────────────────────────────────────────────────────────────
 function calcDay(date){
   const d=getDay(date);
-  const cs=sumRows(d.cash_sales),sp=sumRows(d.purchase_secondary),exp=sumRows(d.expenditure);
+  const cs=sumRows(d.cash_sales);
+  const mkt=(d.market_history||[]).reduce((s,v)=>s+(parseFloat(v)||0),0);
+  const sp=sumRows(d.purchase_secondary)+mkt,exp=sumRows(d.expenditure);
   const tr=(d.transfer_history||[]).reduce((s,v)=>s+(parseFloat(v)||0),0);
   const rc=(d.recharge_history||[]).reduce((s,v)=>s+(parseFloat(v)||0),0);
   const cm=(d.commission_history||[]).reduce((s,v)=>s+(parseFloat(v)||0),0);

@@ -332,6 +332,8 @@ let allData={}, currentDate=formatDate(new Date()), activeTab=0, toastTimer=null
 const loc=LS.get('ssm_data'); if(loc){try{allData=JSON.parse(loc);}catch(e){}}
 // After local load, seed any missing Put In values immediately
 setTimeout(()=>{ ensureAllDaysPutin(); },100);
+// Sync any pending unsynced data from previous session
+syncPendingOnStart();
 
 // ── Sync bar ──────────────────────────────────────────────────────────────────
 function sbar(cls,msg,autohide=0){
@@ -341,16 +343,82 @@ function sbar(cls,msg,autohide=0){
 }
 
 // ── Save: local + Firebase ────────────────────────────────────────────────────
+// ── Pending sync queue ───────────────────────────────────────────────────────
+let _pendingSync=false;
+let _retryTimer=null;
+let _retryCount=0;
+const MAX_RETRIES=10;
+const RETRY_DELAYS=[5000,10000,15000,30000,60000]; // progressive backoff
+
 function saveData(){
+  // 1. Save to localStorage instantly — data is NEVER lost
   LS.set('ssm_data',JSON.stringify(allData));
+  LS.set('ssm_pending','1'); // mark as pending sync
+  _pendingSync=true;
+
+  // 2. Debounce Firebase sync 3s
   clearTimeout(syncTimer);
-  sbar('sb-syncing','⏳ Saving...');
-  syncTimer=setTimeout(()=>{
-    if(!window._fbSet){sbar('sb-offline','📵 Saved locally (no Firebase config)',4000);return;}
-    window._fbSet(allData)
-      .then(()=>sbar('sb-synced','✅ Synced to both devices',3000))
-      .catch(()=>sbar('sb-offline','⚠ Saved locally — sync failed',4000));
-  },3000);
+  sbar('sb-syncing','⏳ Saved locally. Syncing...');
+  syncTimer=setTimeout(()=>{ pushToFirebase(); },1500);
+}
+
+function pushToFirebase(){
+  if(!window._fbSet){
+    sbar('sb-offline','📵 No connection — data saved locally, will sync when online',0);
+    scheduleRetry();
+    return;
+  }
+  window._fbSet(allData)
+    .then(()=>{
+      _pendingSync=false;
+      _retryCount=0;
+      LS.set('ssm_pending','0');
+      clearTimeout(_retryTimer);
+      sbar('sb-synced','✅ Synced to both devices',3000);
+    })
+    .catch(()=>{
+      sbar('sb-offline','⚠ Network slow — saved locally, retrying...',0);
+      scheduleRetry();
+    });
+}
+
+function scheduleRetry(){
+  clearTimeout(_retryTimer);
+  if(_retryCount>=MAX_RETRIES){
+    sbar('sb-offline','📵 Offline — data safe locally. Will sync when internet returns.',0);
+    // Listen for network recovery
+    window.addEventListener('online', onNetworkBack, {once:true});
+    return;
+  }
+  const delay=RETRY_DELAYS[Math.min(_retryCount, RETRY_DELAYS.length-1)];
+  _retryCount++;
+  _retryTimer=setTimeout(()=>{
+    if(_pendingSync){
+      sbar('sb-syncing',`⏳ Retrying sync (attempt ${_retryCount})...`);
+      pushToFirebase();
+    }
+  }, delay);
+}
+
+function onNetworkBack(){
+  if(_pendingSync){
+    _retryCount=0;
+    sbar('sb-syncing','🌐 Back online — syncing data...');
+    setTimeout(()=>pushToFirebase(), 1000);
+  }
+}
+
+// On app start: if there's unsynced data from previous session, push it
+function syncPendingOnStart(){
+  if(LS.get('ssm_pending')==='1' && Object.keys(allData).length>0){
+    _pendingSync=true;
+    setTimeout(()=>{
+      if(_pendingSync && window._fbSet){
+        sbar('sb-syncing','⏳ Syncing previously unsaved data...');
+        pushToFirebase();
+      }
+    },4000); // wait for Firebase to connect first
+  }
 }
 
 function getDay(date){return allData[date]||initDay();}
@@ -381,6 +449,13 @@ function startListen(){
 window.addEventListener('firebase-ready',()=>{
   startListen();
   sbar('sb-synced','✅ Firebase connected!',3000);
+  // Push any pending local data that failed to sync previously
+  setTimeout(()=>{
+    if(_pendingSync && window._fbSet){
+      sbar('sb-syncing','⏳ Syncing pending data...');
+      pushToFirebase();
+    }
+  },2000);
 });
 window.addEventListener('firebase-failed',()=>{
   sbar('sb-offline','⚠ Firebase not reachable. Check: 1) Internet on 2) Realtime Database created in Firebase console',0);

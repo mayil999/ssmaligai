@@ -110,25 +110,13 @@
     <div class="login-title">SRI SAKTHI MALIGAI</div>
     <div class="login-sub">Business Tracker</div>
 
-    <!-- Step 1: Phone number -->
-    <div id="step-phone">
-      <div class="login-label">Enter your mobile number</div>
-      <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px;">
-        <span style="font-size:15px;font-weight:700;color:#555;padding:12px 10px;background:#f0f4fa;border-radius:8px;border:2px solid #e0e8f7;">+91</span>
-        <input class="login-inp" type="tel" id="login-phone" placeholder="10-digit mobile number" maxlength="10" style="flex:1;margin-bottom:0;"/>
-      </div>
-      <button class="login-btn" id="btn-send-otp">💬 Send OTP via WhatsApp</button>
-      <div class="login-err" id="err-phone"></div>
+    <div class="login-label">Enter your mobile number</div>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px;">
+      <span style="font-size:15px;font-weight:700;color:#555;padding:12px 10px;background:#f0f4fa;border-radius:8px;border:2px solid #e0e8f7;">+91</span>
+      <input class="login-inp" type="tel" id="login-phone" placeholder="10-digit mobile number" maxlength="10" style="flex:1;margin-bottom:0;"/>
     </div>
-
-    <!-- Step 2: OTP entry -->
-    <div id="step-otp" style="display:none;">
-      <div class="login-label" id="otp-instruction">WhatsApp will open — send OTP to yourself</div>
-      <input class="login-inp" type="number" id="login-otp" placeholder="Enter 6-digit OTP" maxlength="6"/>
-      <button class="login-btn" id="btn-verify-otp">Verify OTP</button>
-      <button style="width:100%;margin-top:8px;padding:10px;background:none;border:1px solid #d0d7e3;border-radius:8px;font-size:13px;color:#666;cursor:pointer;" id="btn-back">← Change Number</button>
-      <div class="login-err" id="err-otp"></div>
-    </div>
+    <button class="login-btn" id="btn-send-otp">Login</button>
+    <div class="login-err" id="err-phone"></div>
 
   </div>
 </div>
@@ -141,24 +129,16 @@ const LS={
   set(k,v){try{localStorage.setItem(k,v);}catch(e){}}
 };
 
-// ── Login — Fast2SMS OTP (phone numbers stored as SHA-256 hashes) ─────────────
-// Allowed number hashes (actual numbers never stored in code)
+// ── Login — Fast2SMS OTP (phone numbers stored as SHA-256 hashes) ───// ── Login — direct number check (hashed, secure) ────────────────────────────
 const ALLOWED_HASHES=[
   '82b0a9bae197863b2c13ab6fb5759c18cec6e94c4c89a5418a17c3083d4773ad',
   'ff528eca96bdeea75b5b20d32a2d2433eda2e2a9b2b78132c60c6aec7b389712'
 ];
 let appStarted=false;
-let currentOTP='';
-let otpExpiry=0;
-let verifiedPhone='';
 
 async function hashStr(str){
   const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(str));
   return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
-}
-
-function generateOTP(){
-  return String(Math.floor(100000+Math.random()*900000));
 }
 
 async function sendOTP(){
@@ -167,74 +147,27 @@ async function sendOTP(){
   const btnSend=document.getElementById('btn-send-otp');
   const phone=(phoneEl.value||'').trim().replace(/\D/g,'');
   if(phone.length!==10){errEl.textContent='\u274C Enter valid 10-digit number';return;}
-  const hashed=await hashStr(phone);
-  if(!ALLOWED_HASHES.includes(hashed)){
-    errEl.textContent='\u274C Access denied. This number is not authorised.';
-    return;
-  }
-  // Generate OTP
-  currentOTP=generateOTP();
-  otpExpiry=Date.now()+5*60*1000; // 5 min expiry
-  verifiedPhone=phone;
-  btnSend.textContent='Opening WhatsApp...';
+  btnSend.textContent='Verifying...';
   btnSend.disabled=true;
   errEl.textContent='';
-  // Open WhatsApp with OTP message to self
-  const waMsg=encodeURIComponent('Sri Sakthi Maligai Login OTP: '+currentOTP+'. Valid 5 mins. Do not share.');
-  const waURL='https://wa.me/91'+phone+'?text='+waMsg;
-  window.open(waURL,'_blank');
-  // Show OTP entry step
-  document.getElementById('step-phone').style.display='none';
-  document.getElementById('step-otp').style.display='block';
-  document.getElementById('otp-instruction').textContent='\u2705 WhatsApp opened! Send the message to yourself, then enter OTP below.';
-  document.getElementById('login-otp').focus();
-  btnSend.textContent='\uD83D\uDCAC Send OTP via WhatsApp';
-  btnSend.disabled=false;
-}
-
-function verifyOTP(){
-  const otpEl=document.getElementById('login-otp');
-  const errEl=document.getElementById('err-otp');
-  const entered=(otpEl.value||'').trim();
-  if(!entered){errEl.textContent='\u274C Enter the OTP';return;}
-  if(Date.now()>otpExpiry){
-    errEl.textContent='\u274C OTP expired. Go back and try again.';
-    currentOTP=''; return;
-  }
-  if(entered===currentOTP){
+  const hashed=await hashStr(phone);
+  if(ALLOWED_HASHES.includes(hashed)){
     const _today=new Date().toISOString().slice(0,10);
     LS.set('ssm_auth_date',_today);
-    LS.set('ssm_auth_phone', verifiedPhone);
     document.getElementById('login-screen').style.display='none';
-    currentOTP=''; // clear OTP after use
     if(!appStarted){appStarted=true;render();}
   } else {
-    errEl.textContent='\u274C Wrong OTP. Try again.';
-    otpEl.value=''; otpEl.focus();
+    errEl.textContent='\u274C Access denied. This number is not authorised.';
+    btnSend.textContent='Login';
+    btnSend.disabled=false;
   }
-}
-
-function goBack(){
-  document.getElementById('step-otp').style.display='none';
-  document.getElementById('step-phone').style.display='block';
-  document.getElementById('login-phone').focus();
-  currentOTP='';
 }
 
 function setupLogin(){
-  // Wire up buttons
   const btnSend=document.getElementById('btn-send-otp');
-  const btnVerify=document.getElementById('btn-verify-otp');
-  const btnBack=document.getElementById('btn-back');
   const phoneInp=document.getElementById('login-phone');
-  const otpInp=document.getElementById('login-otp');
-
   if(btnSend) btnSend.addEventListener('click', sendOTP);
-  if(btnVerify) btnVerify.addEventListener('click', verifyOTP);
-  if(btnBack) btnBack.addEventListener('click', goBack);
   if(phoneInp) phoneInp.addEventListener('keydown',e=>{if(e.key==='Enter') sendOTP();});
-  if(otpInp) otpInp.addEventListener('keydown',e=>{if(e.key==='Enter') verifyOTP();});
-
   // Already logged in today? Skip login
   const today=new Date().toISOString().slice(0,10);
   if(LS.get('ssm_auth_date')===today){

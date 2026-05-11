@@ -44,24 +44,49 @@
         const auth = firebase.auth(app);
         const db   = firebase.database(app);
 
-        // Sign in anonymously first — then access DB securely
-        auth.signInAnonymously()
-          .then(userCred => {
-            window._fbUID = userCred.user.uid;
+        // Use LOCAL persistence so auth token survives cache clears as much as possible
+        auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(()=>{});
+
+        function doSignIn(){
+          return auth.signInAnonymously()
+            .then(userCred => {
+              window._fbUID = userCred.user.uid;
+              window._fbApp = app;
+              window._fbDB  = db;
+              window._fbAuth = auth;
+              window._fbSet    = (data) => db.ref('ssm_data').set(data);
+              window._fbListen = (cb)   => db.ref('ssm_data').on('value', s => cb(s.val()));
+              window._firebaseReady = true;
+              window.dispatchEvent(new Event('firebase-ready'));
+            });
+        }
+
+        // Listen for auth state — handles token refresh automatically
+        auth.onAuthStateChanged(user => {
+          if(user){
+            window._fbUID = user.uid;
             window._fbSet    = (data) => db.ref('ssm_data').set(data);
             window._fbListen = (cb)   => db.ref('ssm_data').on('value', s => cb(s.val()));
-            window._firebaseReady = true;
-            window.dispatchEvent(new Event('firebase-ready'));
-          })
-          .catch(e => {
-            // Auth failed — try next URL
-            tryFirebase(urlIndex + 1);
-          });
+            if(!window._firebaseReady){
+              window._firebaseReady = true;
+              window.dispatchEvent(new Event('firebase-ready'));
+            }
+            // Force token refresh every 50 minutes to prevent expiry-induced logout
+            setInterval(()=>{ user.getIdToken(true).catch(()=>doSignIn()); }, 50*60*1000);
+          } else {
+            // Signed out — re-authenticate silently
+            window._firebaseReady = false;
+            doSignIn().catch(()=>{ tryFirebase(urlIndex + 1); });
+          }
+        });
 
-        // Fallback: if no auth response in 6s try next
+        // Initial sign-in
+        doSignIn().catch(e => { tryFirebase(urlIndex + 1); });
+
+        // Fallback: if no auth response in 8s try next
         setTimeout(() => {
           if(!window._firebaseReady) tryFirebase(urlIndex + 1);
-        }, 6000);
+        }, 8000);
       } catch(e) {
         tryFirebase(urlIndex + 1);
       }
@@ -152,8 +177,8 @@ async function sendOTP(){
   errEl.textContent='';
   const hashed=await hashStr(phone);
   if(ALLOWED_HASHES.includes(hashed)){
-    const _today=new Date().toISOString().slice(0,10);
-    LS.set('ssm_auth_date',_today);
+    // Permanent login — no daily re-login needed
+    LS.set('ssm_auth','1');
     document.getElementById('login-screen').style.display='none';
     if(!appStarted){appStarted=true;render();}
   } else {
@@ -168,9 +193,8 @@ function setupLogin(){
   const phoneInp=document.getElementById('login-phone');
   if(btnSend) btnSend.addEventListener('click', sendOTP);
   if(phoneInp) phoneInp.addEventListener('keydown',e=>{if(e.key==='Enter') sendOTP();});
-  // Already logged in today? Skip login
-  const today=new Date().toISOString().slice(0,10);
-  if(LS.get('ssm_auth_date')===today){
+  // Permanent login — once authenticated, never ask again
+  if(LS.get('ssm_auth')==='1'){
     const ls=document.getElementById('login-screen');
     if(ls) ls.style.display='none';
     if(!appStarted){appStarted=true;render();}
@@ -262,11 +286,28 @@ function prevDayTens(date){
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let allData={}, currentDate=formatDate(new Date()), activeTab=0, toastTimer=null, syncTimer=null;
+let _autoSaveTimer=null; // for 2.5s autosave debounce
 const loc=LS.get('ssm_data'); if(loc){try{allData=JSON.parse(loc);}catch(e){}}
 // After local load, seed any missing Put In values immediately
 setTimeout(()=>{ ensureAllDaysPutin(); },100);
 // Sync any pending unsynced data from previous session
 syncPendingOnStart();
+
+// Track if user is actively focused in an input (to prevent cursor loss on remote sync)
+function isUserTyping(){
+  const a=document.activeElement;
+  return a && (a.tagName==='INPUT'||a.tagName==='TEXTAREA');
+}
+// Safe re-render: skip if user is currently typing; re-render after they leave
+function safeRenderTab(idx){
+  if(isUserTyping()){
+    const el=document.activeElement;
+    const onBlur=()=>{ el.removeEventListener('blur',onBlur); renderTab(idx); };
+    el.addEventListener('blur',onBlur);
+    return;
+  }
+  renderTab(idx);
+}
 
 // ── Sync bar ──────────────────────────────────────────────────────────────────
 function sbar(cls,msg,autohide=0){
@@ -301,18 +342,40 @@ function pushToFirebase(){
     scheduleRetry();
     return;
   }
-  window._fbSet(allData)
-    .then(()=>{
-      _pendingSync=false;
-      _retryCount=0;
-      LS.set('ssm_pending','0');
-      clearTimeout(_retryTimer);
-      sbar('sb-synced','✅ Synced to both devices',3000);
-    })
-    .catch(()=>{
-      sbar('sb-offline','⚠ Network slow — saved locally, retrying...',0);
-      scheduleRetry();
-    });
+  // Ensure token is fresh before pushing — prevents auth-expired failures
+  const tryPush = () => {
+    window._fbSet(allData)
+      .then(()=>{
+        _pendingSync=false;
+        _retryCount=0;
+        LS.set('ssm_pending','0');
+        clearTimeout(_retryTimer);
+        sbar('sb-synced','✅ Synced to both devices',3000);
+      })
+      .catch((err)=>{
+        // If permission denied (auth expired), re-auth then retry once
+        if(err && (err.code==='PERMISSION_DENIED'||err.code==='permission-denied'||(err.message&&err.message.includes('permission')))){
+          sbar('sb-syncing','🔄 Re-authenticating...',0);
+          if(window._fbAuth){
+            window._fbAuth.signInAnonymously()
+              .then(()=>{ window._fbSet(allData).then(()=>{
+                _pendingSync=false;_retryCount=0;LS.set('ssm_pending','0');
+                clearTimeout(_retryTimer);sbar('sb-synced','✅ Synced after re-auth',3000);
+              }).catch(()=>{sbar('sb-offline','⚠ Sync failed after re-auth — saved locally',0);scheduleRetry();});})
+              .catch(()=>{sbar('sb-offline','⚠ Re-auth failed — data safe locally',0);scheduleRetry();});
+          } else { scheduleRetry(); }
+        } else {
+          sbar('sb-offline','⚠ Network slow — saved locally, retrying...',0);
+          scheduleRetry();
+        }
+      });
+  };
+  // Refresh token if available, then push
+  if(window._fbAuth && window._fbAuth.currentUser){
+    window._fbAuth.currentUser.getIdToken(false).then(tryPush).catch(tryPush);
+  } else {
+    tryPush();
+  }
 }
 
 function scheduleRetry(){
@@ -368,14 +431,14 @@ function startListen(){
       allData={...allData,...remote};
       LS.set('ssm_data',JSON.stringify(allData));
       ensureAllDaysPutin(); // auto-seed prev 10s into put in after data loaded
-      renderTab(activeTab);
+      safeRenderTab(activeTab);
       sbar('sb-synced','✅ Connected & synced',3000);
       return;
     }
     allData={...allData,...remote};
     LS.set('ssm_data',JSON.stringify(allData));
     ensureAllDaysPutin();
-    renderTab(activeTab);
+    safeRenderTab(activeTab);
     sbar('sb-synced','🔄 Updated from other device',3000);
   });
 }
@@ -507,16 +570,40 @@ function buildTbl(tabKey){
   rows.forEach((row,i)=>{
     const tr=el('tr',{style:{background:i%2===0?'#f8fbff':'#fff'}});
     const li=el('input',{type:'text',placeholder:`Item ${i+1}`,value:row.label,style:{width:'100%',padding:'7px 8px',border:'1px solid #d0d7e3',borderRadius:'6px',fontSize:'13px',background:'#fff',boxSizing:'border-box'}});
-    li.addEventListener('input',e=>{setDay(currentDate,d=>{const r=[...d[tabKey]];r[i]={...r[i],label:e.target.value};return{...d,[tabKey]:r};});});
+    li.addEventListener('input',e=>{
+      // Update in-memory state directly without re-render or cursor move
+      if(!allData[currentDate]) allData[currentDate]=initDay();
+      if(!allData[currentDate][tabKey]) allData[currentDate][tabKey]=emptyRows();
+      allData[currentDate][tabKey][i]={...allData[currentDate][tabKey][i],label:e.target.value};
+      scheduleAutoSave();
+    });
     const ai=el('input',{type:'number',placeholder:'0.00',value:row.amount,min:'0',step:'0.01',style:{width:'100%',padding:'7px 8px',border:'1px solid #d0d7e3',borderRadius:'6px',fontSize:'13px',background:'#fff',boxSizing:'border-box'}});
     ai.addEventListener('input',e=>{
-      setDay(currentDate,d=>{const r=[...d[tabKey]];r[i]={...r[i],amount:e.target.value};return{...d,[tabKey]:r};});
-      const b=document.getElementById('tb-'+tabKey);if(b)b.textContent='Total: '+fmtINR(sumRows(getDay(currentDate)[tabKey]));
+      // Update in-memory state directly without re-render or cursor move
+      if(!allData[currentDate]) allData[currentDate]=initDay();
+      if(!allData[currentDate][tabKey]) allData[currentDate][tabKey]=emptyRows();
+      allData[currentDate][tabKey][i]={...allData[currentDate][tabKey][i],amount:e.target.value};
+      const b=document.getElementById('tb-'+tabKey);
+      if(b) b.textContent='Total: '+fmtINR(sumRows(allData[currentDate][tabKey]));
+      scheduleAutoSave();
     });
     tr.append(el('td',{style:{padding:'4px'}},li),el('td',{style:{padding:'4px'}},ai));
     tbody.append(tr);
   });
   tbl.append(tbody);wrap.append(tbl);return wrap;
+}
+
+// Debounced autosave: saves to localStorage immediately, pushes to Firebase after 2.5s of inactivity
+function scheduleAutoSave(){
+  // Save to localStorage right away — no data loss
+  LS.set('ssm_data',JSON.stringify(allData));
+  LS.set('ssm_pending','1');
+  _pendingSync=true;
+  // Debounce the Firebase push by 2.5s
+  clearTimeout(_autoSaveTimer);
+  _autoSaveTimer=setTimeout(()=>{
+    pushToFirebase();
+  }, 2500);
 }
 
 // ── Tab renderers ─────────────────────────────────────────────────────────────

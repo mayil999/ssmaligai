@@ -342,6 +342,11 @@ function pushToFirebase(){
     scheduleRetry();
     return;
   }
+  // CRITICAL SAFETY: never push empty data to Firebase — would wipe all records
+  if(!allData || Object.keys(allData).length===0){
+    sbar('sb-offline','⚠ No local data to push — waiting for Firebase pull first',3000);
+    return;
+  }
   // Ensure token is fresh before pushing — prevents auth-expired failures
   const tryPush = () => {
     window._fbSet(allData)
@@ -425,16 +430,36 @@ function startListen(){
   if(!window._fbListen)return;
   let firstCall=true;
   window._fbListen(remote=>{
-    if(!remote) return;
-    if(firstCall){
-      firstCall=false;
-      allData={...allData,...remote};
-      LS.set('ssm_data',JSON.stringify(allData));
-      ensureAllDaysPutin(); // auto-seed prev 10s into put in after data loaded
-      safeRenderTab(activeTab);
-      sbar('sb-synced','✅ Connected & synced',3000);
+    // SAFETY: if Firebase returns null/empty, do NOT wipe local data
+    if(!remote || Object.keys(remote).length===0){
+      if(firstCall){
+        firstCall=false;
+        // Firebase is empty but we have local data — push local to Firebase (restore it)
+        if(Object.keys(allData).length>0){
+          sbar('sb-syncing','⏳ Firebase empty — restoring your local data...',0);
+          setTimeout(()=>pushToFirebase(),1000);
+        } else {
+          sbar('sb-synced','✅ Connected (no data yet)',3000);
+        }
+      }
       return;
     }
+    if(firstCall){
+      firstCall=false;
+      // Merge: remote wins for dates it has, local wins for dates only local has
+      const localKeys=Object.keys(allData).length;
+      allData={...allData,...remote};
+      LS.set('ssm_data',JSON.stringify(allData));
+      ensureAllDaysPutin();
+      safeRenderTab(activeTab);
+      sbar('sb-synced','✅ Connected & synced',3000);
+      // If local had pending data that Firebase doesn't have, push the merged result
+      if(localKeys>0 && _pendingSync){
+        setTimeout(()=>pushToFirebase(),2000);
+      }
+      return;
+    }
+    // Subsequent updates from other device — merge carefully
     allData={...allData,...remote};
     LS.set('ssm_data',JSON.stringify(allData));
     ensureAllDaysPutin();
@@ -445,13 +470,13 @@ function startListen(){
 window.addEventListener('firebase-ready',()=>{
   startListen();
   sbar('sb-synced','✅ Firebase connected!',3000);
-  // Push any pending local data that failed to sync previously
+  // Push pending only after startListen has had a chance to pull first (3s delay)
   setTimeout(()=>{
     if(_pendingSync && window._fbSet){
       sbar('sb-syncing','⏳ Syncing pending data...');
       pushToFirebase();
     }
-  },2000);
+  },3000);
 });
 window.addEventListener('firebase-failed',()=>{
   sbar('sb-offline','⚠ Firebase not reachable. Check: 1) Internet on 2) Realtime Database created in Firebase console',0);
@@ -521,6 +546,24 @@ function exportXLSX(){
 
   XLSX.writeFile(wb,`SriSakthiMaligai_${formatDate(new Date())}.xlsx`);
   showToast('\u2705 Excel exported!');
+}
+
+// ── Backup: download all data as JSON ────────────────────────────────────────
+function backupJSON(){
+  if(!allData||Object.keys(allData).length===0){showToast('❌ No data to backup');return;}
+  const json=JSON.stringify(allData,null,2);
+  const blob=new Blob([json],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  const dateStr=formatDate(new Date()).replace(/-/g,'');
+  a.href=url;
+  a.download=`SriSakthiMaligai_Backup_${dateStr}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  const days=Object.keys(allData).length;
+  showToast(`✅ Backup downloaded! (${days} days of data)`);
 }
 
 // ── UI ────────────────────────────────────────────────────────────────────────
@@ -851,8 +894,70 @@ function renderTab(idx){
         card('Transfer',agg.fyMap[fy].transfer,'#0097a7'),card('Recharge',agg.fyMap[fy].recharge,'#7b1fa2'),
         profitCard('Profit (est.)',agg.fyMap[fy].profit),
       ]),
-      el('button',{style:{marginTop:'20px',width:'100%',padding:'14px',background:'linear-gradient(135deg,#2e7d32,#1b5e20)',color:'#fff',border:'none',borderRadius:'10px',fontSize:'15px',fontWeight:'800',cursor:'pointer',boxShadow:'0 2px 10px rgba(46,125,50,0.25)'},onClick:exportXLSX},'\uD83D\uDCCA Export All Data as XLSX')
+      el('button',{style:{marginTop:'20px',width:'100%',padding:'14px',background:'linear-gradient(135deg,#2e7d32,#1b5e20)',color:'#fff',border:'none',borderRadius:'10px',fontSize:'15px',fontWeight:'800',cursor:'pointer',boxShadow:'0 2px 10px rgba(46,125,50,0.25)'},onClick:exportXLSX},'\uD83D\uDCCA Export All Data as XLSX'),
+
+      // ── Backup / Restore panel ──────────────────────────────────────────────
+      el('div',{style:{marginTop:'24px',background:'#fff3e0',border:'2px solid #ff9800',borderRadius:'14px',padding:'16px'}},
+        el('div',{style:{fontSize:'14px',fontWeight:'900',color:'#e65100',marginBottom:'4px'}},'🔐 Data Backup & Restore'),
+        el('div',{style:{fontSize:'11px',color:'#bf360c',marginBottom:'14px',lineHeight:'1.6'}},
+          'Use BACKUP to save a full copy of all your data as a JSON file.\nUse RESTORE to load a previously saved backup back into the app and Firebase.'),
+
+        // Backup button
+        el('button',{
+          style:{width:'100%',padding:'13px',background:'linear-gradient(135deg,#f57c00,#e65100)',color:'#fff',
+            border:'none',borderRadius:'10px',fontSize:'15px',fontWeight:'800',cursor:'pointer',marginBottom:'10px',
+            boxShadow:'0 2px 8px rgba(230,81,0,0.3)'},
+          onClick: backupJSON
+        },'\u2B07\uFE0F Download Full Backup (JSON)'),
+
+        // Restore button + hidden file input
+        el('button',{
+          style:{width:'100%',padding:'13px',background:'linear-gradient(135deg,#1565c0,#0d47a1)',color:'#fff',
+            border:'none',borderRadius:'10px',fontSize:'15px',fontWeight:'800',cursor:'pointer',
+            boxShadow:'0 2px 8px rgba(13,71,161,0.3)'},
+          onClick: ()=>document.getElementById('restore-file-input').click()
+        },'\u2B06\uFE0F Restore from Backup (JSON)'),
+        el('input',{id:'restore-file-input',type:'file',accept:'.json',style:{display:'none'}}),
+      )
     );
+
+    // Wire up restore file input after DOM inserted
+    setTimeout(()=>{
+      const inp=document.getElementById('restore-file-input');
+      if(inp) inp.addEventListener('change',e=>{
+        const file=e.target.files[0]; if(!file)return;
+        const reader=new FileReader();
+        reader.onload=ev=>{
+          try{
+            const parsed=JSON.parse(ev.target.result);
+            // Validate: must be an object with date-like keys
+            const keys=Object.keys(parsed);
+            const validKeys=keys.filter(k=>/^\d{4}-\d{2}-\d{2}$/.test(k));
+            if(keys.length===0||validKeys.length===0){
+              showToast('❌ Invalid backup file — no date records found');return;
+            }
+            if(!confirm(`Restore ${validKeys.length} days of data from backup?\n\nThis will MERGE with current data (existing dates kept, missing dates restored).\n\nTap OK to continue.`))return;
+            // Merge: backup fills in missing dates, does not overwrite newer data
+            let added=0;
+            validKeys.forEach(k=>{
+              if(!allData[k]){allData[k]=parsed[k];added++;}
+            });
+            LS.set('ssm_data',JSON.stringify(allData));
+            LS.set('ssm_pending','1');
+            _pendingSync=true;
+            // Push merged data to Firebase
+            sbar('sb-syncing',`⏳ Restored ${added} days — syncing to Firebase...`,0);
+            setTimeout(()=>pushToFirebase(),500);
+            showToast(`✅ Restored ${added} missing days from backup!`);
+            renderTab(4);
+          }catch(err){
+            showToast('❌ Could not read backup file');
+          }
+        };
+        reader.readAsText(file);
+        inp.value=''; // reset so same file can be picked again
+      });
+    },100);
   }
   // ── Tab 5: Things to Purchase ─────────────────────────────────────────────
   else if(idx===5){

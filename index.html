@@ -237,11 +237,16 @@ function ensurePresets(tabKey){
     return r;
   });
   if(changed){
-    // Save silently without triggering sync bar
+    // Save through the normal debounced path (not an immediate push) so this
+    // doesn't race ahead of — or get raced by — an entry the user is actively
+    // typing into a cumulative box on the same date.
     allData[currentDate]={...d,[tabKey]:newRows};
+    _dirtyDates.add(currentDate);
     LS.set('ssm_data',JSON.stringify(allData));
-    // Sync to Firebase quietly
-    if(window._fbSet) window._fbSet(allData).catch(()=>{});
+    clearTimeout(syncTimer);
+    syncTimer=setTimeout(()=>{ pushToFirebase(); },4000);
+    LS.set('ssm_pending','1');
+    _pendingSync=true;
   }
 }
 
@@ -262,8 +267,12 @@ function ensurePrevTensInPutin(dateToCheck){
   // Auto-save prev day 10s into today's Put In
   const updated = {...d, putin_history:[String(prevTens)]};
   allData[target] = updated;
+  _dirtyDates.add(target);
   LS.set('ssm_data', JSON.stringify(allData));
-  if(window._fbSet) window._fbSet(allData).catch(()=>{});
+  clearTimeout(syncTimer);
+  syncTimer=setTimeout(()=>{ pushToFirebase(); },4000);
+  LS.set('ssm_pending','1');
+  _pendingSync=true;
 }
 
 // Run for ALL dates that might need seeding (runs after data loaded)
@@ -331,10 +340,11 @@ function saveData(){
   LS.set('ssm_pending','1'); // mark as pending sync
   _pendingSync=true;
 
-  // 2. Debounce Firebase sync 3s
+  // 2. Debounce Firebase sync 4s — gives cumulative-entry adds room to settle
+  //    before a push goes out, avoiding the "entry not taken" race.
   clearTimeout(syncTimer);
   sbar('sb-syncing','⏳ Saved locally. Syncing...');
-  syncTimer=setTimeout(()=>{ pushToFirebase(); },1500);
+  syncTimer=setTimeout(()=>{ pushToFirebase(); },4000);
 }
 
 function pushToFirebase(){

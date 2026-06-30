@@ -287,6 +287,7 @@ function prevDayTens(date){
 // ── State ─────────────────────────────────────────────────────────────────────
 let allData={}, currentDate=formatDate(new Date()), activeTab=0, toastTimer=null, syncTimer=null;
 let _autoSaveTimer=null; // for 2.5s autosave debounce
+let _dirtyDates=new Set(); // dates with local edits not yet confirmed pushed to Firebase
 const loc=LS.get('ssm_data'); if(loc){try{allData=JSON.parse(loc);}catch(e){}}
 // After local load, seed any missing Put In values immediately
 setTimeout(()=>{ ensureAllDaysPutin(); },100);
@@ -353,6 +354,7 @@ function pushToFirebase(){
       .then(()=>{
         _pendingSync=false;
         _retryCount=0;
+        _dirtyDates.clear();
         LS.set('ssm_pending','0');
         clearTimeout(_retryTimer);
         sbar('sb-synced','✅ Synced to both devices',3000);
@@ -364,7 +366,7 @@ function pushToFirebase(){
           if(window._fbAuth){
             window._fbAuth.signInAnonymously()
               .then(()=>{ window._fbSet(allData).then(()=>{
-                _pendingSync=false;_retryCount=0;LS.set('ssm_pending','0');
+                _pendingSync=false;_retryCount=0;_dirtyDates.clear();LS.set('ssm_pending','0');
                 clearTimeout(_retryTimer);sbar('sb-synced','✅ Synced after re-auth',3000);
               }).catch(()=>{sbar('sb-offline','⚠ Sync failed after re-auth — saved locally',0);scheduleRetry();});})
               .catch(()=>{sbar('sb-offline','⚠ Re-auth failed — data safe locally',0);scheduleRetry();});
@@ -423,7 +425,7 @@ function syncPendingOnStart(){
 }
 
 function getDay(date){return allData[date]||initDay();}
-function setDay(date,updater){allData[date]=updater(allData[date]||initDay());saveData();}
+function setDay(date,updater){allData[date]=updater(allData[date]||initDay());_dirtyDates.add(date);saveData();}
 
 // ── Firebase: listen for remote changes ──────────────────────────────────────
 function startListen(){
@@ -448,11 +450,17 @@ function startListen(){
       firstCall=false;
       // Merge: remote wins for dates it has, local wins for dates only local has
       const localKeys=Object.keys(allData).length;
-      allData={...allData,...remote};
+      const merged={...allData,...remote};
+      // Never let a stale remote snapshot clobber edits the user made locally
+      // that haven't been confirmed pushed yet (prevents "entry disappears /
+      // need to re-type" race during the 1.5s save debounce).
+      _dirtyDates.forEach(dt=>{ if(allData[dt]) merged[dt]=allData[dt]; });
+      allData=merged;
       LS.set('ssm_data',JSON.stringify(allData));
       ensureAllDaysPutin();
       safeRenderTab(activeTab);
       sbar('sb-synced','✅ Connected & synced',3000);
+      autoDailyBackupCheck();
       // If local had pending data that Firebase doesn't have, push the merged result
       if(localKeys>0 && _pendingSync){
         setTimeout(()=>pushToFirebase(),2000);
@@ -460,7 +468,11 @@ function startListen(){
       return;
     }
     // Subsequent updates from other device — merge carefully
-    allData={...allData,...remote};
+    {
+      const merged={...allData,...remote};
+      _dirtyDates.forEach(dt=>{ if(allData[dt]) merged[dt]=allData[dt]; });
+      allData=merged;
+    }
     LS.set('ssm_data',JSON.stringify(allData));
     ensureAllDaysPutin();
     safeRenderTab(activeTab);
@@ -482,6 +494,22 @@ window.addEventListener('firebase-failed',()=>{
   sbar('sb-offline','⚠ Firebase not reachable. Check: 1) Internet on 2) Realtime Database created in Firebase console',0);
 });
 // timeout handled by firebase-failed event
+
+// Flush any debounced/pending save immediately when app goes to background or
+// is closed — protects against losing the last few seconds of edits if the
+// user switches apps, locks the phone, or the WebView/cache gets cleared
+// before the normal 1.5s debounce would have pushed to Firebase.
+function flushPendingSave(){
+  if(_pendingSync && window._fbSet){
+    clearTimeout(syncTimer);
+    pushToFirebase();
+  }
+}
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='hidden') flushPendingSave();
+});
+window.addEventListener('pagehide',flushPendingSave);
+window.addEventListener('beforeunload',flushPendingSave);
 
 // ── Calculations ──────────────────────────────────────────────────────────────
 function calcDay(date){
@@ -564,6 +592,21 @@ function backupJSON(){
   URL.revokeObjectURL(url);
   const days=Object.keys(allData).length;
   showToast(`✅ Backup downloaded! (${days} days of data)`);
+}
+
+// ── Auto daily JSON backup ───────────────────────────────────────────────────
+// A plain web page/WebView can't run in the background, so "automatic" means:
+// the first time the app is opened on a given day, it silently triggers the
+// same JSON download as the manual backup button, then remembers it did so
+// for that date (per device) so it doesn't repeat all day.
+function autoDailyBackupCheck(){
+  const today=formatDate(new Date());
+  if(LS.get('ssm_last_auto_export')===today) return; // already done today on this device
+  if(!allData||Object.keys(allData).length===0) return; // nothing to back up yet
+  setTimeout(()=>{
+    backupJSON();
+    LS.set('ssm_last_auto_export',today);
+  },2500); // small delay so it doesn't fight the initial Firebase pull/merge
 }
 
 // ── UI ────────────────────────────────────────────────────────────────────────
@@ -1101,6 +1144,7 @@ function renderTabsOnly(){
 }
 // Start — all functions now defined
 setupLogin();
+autoDailyBackupCheck();
 </script>
 </body>
 </html>

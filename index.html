@@ -146,6 +146,13 @@
   </div>
 </div>
 <div id="sbar"></div>
+<div id="fb-loading" style="display:none;position:fixed;inset:0;background:rgba(255,255,255,0.96);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;">
+  <div style="font-size:40px">☁️</div>
+  <div style="font-size:17px;font-weight:700;color:#1a73e8">Loading your data...</div>
+  <div style="font-size:13px;color:#666">Connecting to Firebase — please wait</div>
+  <div style="width:48px;height:48px;border:5px solid #e8f0fe;border-top-color:#1a73e8;border-radius:50%;animation:spin 0.9s linear infinite;"></div>
+</div>
+<style>#fb-loading{display:flex;}@keyframes spin{to{transform:rotate(360deg);}}</style>
 <div id="app"></div>
 <script>
 // ── Local storage ─────────────────────────────────────────────────────────────
@@ -488,9 +495,11 @@ function startListen(){
       allData=merged;
       LS.set('ssm_data',JSON.stringify(allData));
       ensureAllDaysPutin();
+      // Data confirmed from Firebase — hide loading overlay
+      const fbLoad=document.getElementById('fb-loading');
+      if(fbLoad) fbLoad.style.display='none';
       remoteRenderTab(activeTab);
       sbar('sb-synced','✅ Connected & synced',3000);
-      autoDailyBackupCheck();
       // If local had pending data that Firebase doesn't have, push the merged result
       if(localKeys>0 && _pendingSync){
         setTimeout(()=>pushToFirebase(),2000);
@@ -521,6 +530,8 @@ window.addEventListener('firebase-ready',()=>{
   },3000);
 });
 window.addEventListener('firebase-failed',()=>{
+  const fbLoad=document.getElementById('fb-loading');
+  if(fbLoad) fbLoad.style.display='none';
   sbar('sb-offline','⚠ Firebase not reachable. Check: 1) Internet on 2) Realtime Database created in Firebase console',0);
 });
 // timeout handled by firebase-failed event
@@ -1113,6 +1124,11 @@ function renderTab(idx){
 // ── Shell ─────────────────────────────────────────────────────────────────────
 const TABS=[{s:'Purchase in Sales'},{s:'Purchase'},{s:'Service'},{s:'Expense'},{s:'EOD'},{s:'To Buy'}];
 function render(){
+  // Show loading overlay until Firebase confirms data is loaded
+  // This prevents users from seeing a false "empty" state before Firebase syncs
+  const fbLoad=document.getElementById('fb-loading');
+  if(fbLoad) fbLoad.style.display='flex';
+  setTimeout(()=>{ if(fbLoad) fbLoad.style.display='none'; },8000); // max wait 8s
   const app=document.getElementById('app');app.innerHTML='';
   const hdr=el('div',{style:{background:'linear-gradient(135deg,#1a73e8,#0d47a1)',color:'#fff',padding:'14px 16px 12px',position:'sticky',top:'0',zIndex:'100',boxShadow:'0 2px 8px rgba(0,0,0,0.18)'}},
     el('div',{style:{fontSize:'20px',fontWeight:'900',letterSpacing:'1.5px',textAlign:'center',textTransform:'uppercase',textShadow:'0 1px 4px rgba(0,0,0,0.2)',marginBottom:'8px'}},'Sri Sakthi Maligai'),
@@ -1174,7 +1190,6 @@ function renderTabsOnly(){
 }
 // Start — all functions now defined
 setupLogin();
-autoDailyBackupCheck();
 </script>
 </body>
 </html>

@@ -308,12 +308,32 @@ function isUserTyping(){
   const a=document.activeElement;
   return a && (a.tagName==='INPUT'||a.tagName==='TEXTAREA');
 }
-// Safe re-render: skip if user is currently typing; re-render after they leave
-function safeRenderTab(idx){
+// Called only from Firebase listener — never triggers a DOM rebuild while the
+// user has unsaved local edits (_dirtyDates not empty). This is the key guard
+// that prevents the "second entry disappears" race:
+//
+//   Timeline without guard:
+//   1. User adds entry → renderTab (DOM rebuilt, fresh input shown)
+//   2. Firebase listener fires → safeRenderTab defers to blur
+//   3. User types 2nd entry, clicks Add → blur fires BEFORE click registers
+//   4. Deferred renderTab rebuilds DOM → old Add-button element vanishes
+//   5. Click hits nothing → entry lost
+//
+//   With guard:
+//   Steps 2-4 are blocked entirely while _dirtyDates.size>0, so the DOM
+//   is never rebuilt mid-interaction. Re-render only happens once the push
+//   confirms and _dirtyDates is cleared (idle state).
+function remoteRenderTab(idx){
+  // While we have un-pushed local edits, our displayed state is already
+  // correct — do NOT re-render (and do NOT register a deferred blur render
+  // that could fire at the wrong moment).
+  if(_dirtyDates.size>0) return;
+  // No pending edits: safe to re-render. Still skip if user happens to be
+  // typing in an unrelated field, and try once after they leave.
   if(isUserTyping()){
     const el=document.activeElement;
-    const onBlur=()=>{ el.removeEventListener('blur',onBlur); renderTab(idx); };
-    el.addEventListener('blur',onBlur);
+    const guard=()=>{ el.removeEventListener('blur',guard); if(_dirtyDates.size===0) renderTab(idx); };
+    el.addEventListener('blur',guard);
     return;
   }
   renderTab(idx);
@@ -468,7 +488,7 @@ function startListen(){
       allData=merged;
       LS.set('ssm_data',JSON.stringify(allData));
       ensureAllDaysPutin();
-      safeRenderTab(activeTab);
+      remoteRenderTab(activeTab);
       sbar('sb-synced','✅ Connected & synced',3000);
       autoDailyBackupCheck();
       // If local had pending data that Firebase doesn't have, push the merged result
@@ -485,7 +505,7 @@ function startListen(){
     }
     LS.set('ssm_data',JSON.stringify(allData));
     ensureAllDaysPutin();
-    safeRenderTab(activeTab);
+    remoteRenderTab(activeTab);
     sbar('sb-synced','🔄 Updated from other device',3000);
   });
 }

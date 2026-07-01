@@ -187,7 +187,13 @@ async function sendOTP(){
     // Permanent login — no daily re-login needed
     LS.set('ssm_auth','1');
     document.getElementById('login-screen').style.display='none';
-    if(!appStarted){appStarted=true;render();}
+    if(!appStarted){
+      appStarted=true;
+      const fbLoad=document.getElementById('fb-loading');
+      if(fbLoad) fbLoad.style.display='flex';
+      setTimeout(()=>{ if(fbLoad) fbLoad.style.display='none'; },8000);
+      render();
+    }
   } else {
     errEl.textContent='\u274C Access denied. This number is not authorised.';
     btnSend.textContent='Login';
@@ -204,7 +210,14 @@ function setupLogin(){
   if(LS.get('ssm_auth')==='1'){
     const ls=document.getElementById('login-screen');
     if(ls) ls.style.display='none';
-    if(!appStarted){appStarted=true;render();}
+    if(!appStarted){
+      appStarted=true;
+      // Show loading overlay once — Firebase hasn't connected yet
+      const fbLoad=document.getElementById('fb-loading');
+      if(fbLoad) fbLoad.style.display='flex';
+      setTimeout(()=>{ if(fbLoad) fbLoad.style.display='none'; },8000);
+      render();
+    }
   } else {
     if(phoneInp) setTimeout(()=>phoneInp.focus(),300);
   }
@@ -1124,11 +1137,6 @@ function renderTab(idx){
 // ── Shell ─────────────────────────────────────────────────────────────────────
 const TABS=[{s:'Purchase in Sales'},{s:'Purchase'},{s:'Service'},{s:'Expense'},{s:'EOD'},{s:'To Buy'}];
 function render(){
-  // Show loading overlay until Firebase confirms data is loaded
-  // This prevents users from seeing a false "empty" state before Firebase syncs
-  const fbLoad=document.getElementById('fb-loading');
-  if(fbLoad) fbLoad.style.display='flex';
-  setTimeout(()=>{ if(fbLoad) fbLoad.style.display='none'; },8000); // max wait 8s
   const app=document.getElementById('app');app.innerHTML='';
   const hdr=el('div',{style:{background:'linear-gradient(135deg,#1a73e8,#0d47a1)',color:'#fff',padding:'14px 16px 12px',position:'sticky',top:'0',zIndex:'100',boxShadow:'0 2px 8px rgba(0,0,0,0.18)'}},
     el('div',{style:{fontSize:'20px',fontWeight:'900',letterSpacing:'1.5px',textAlign:'center',textTransform:'uppercase',textShadow:'0 1px 4px rgba(0,0,0,0.2)',marginBottom:'8px'}},'Sri Sakthi Maligai'),

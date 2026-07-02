@@ -146,13 +146,13 @@
   </div>
 </div>
 <div id="sbar"></div>
-<div id="fb-loading" style="display:none;position:fixed;inset:0;background:rgba(255,255,255,0.96);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;">
+<div id="fb-loading" style="display:none;position:fixed;inset:0;background:rgba(255,255,255,0.96);z-index:9999;flex-direction:column;align-items:center;justify-content:center;gap:16px;">
   <div style="font-size:40px">☁️</div>
   <div style="font-size:17px;font-weight:700;color:#1a73e8">Loading your data...</div>
   <div style="font-size:13px;color:#666">Connecting to Firebase — please wait</div>
   <div style="width:48px;height:48px;border:5px solid #e8f0fe;border-top-color:#1a73e8;border-radius:50%;animation:spin 0.9s linear infinite;"></div>
 </div>
-<style>#fb-loading{display:flex;}@keyframes spin{to{transform:rotate(360deg);}}</style>
+<style>@keyframes spin{to{transform:rotate(360deg);}}</style>
 <div id="app"></div>
 <script>
 // ── Local storage ─────────────────────────────────────────────────────────────
